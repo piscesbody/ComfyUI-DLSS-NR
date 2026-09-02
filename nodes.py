@@ -64,6 +64,12 @@ T = {
     # node display names
     "video_node": {"zh": "DLSS NR 视频超分 (SR+NR)", "en": "DLSS NR Video Upscale (SR+NR)"},
     "image_node": {"zh": "DLSS NR 图片超分 (SR+NR)", "en": "DLSS NR Image Upscale (SR+NR)"},
+    # short widget labels
+    "lbl_video_path": {"zh": "视频路径", "en": "Video path"},
+    "lbl_preset": {"zh": "画质预设", "en": "Quality preset"},
+    "lbl_images": {"zh": "输入图片", "en": "Images"},
+    "lbl_batch": {"zh": "批处理模式", "en": "Batch mode"},
+    "lbl_selfcheck": {"zh": "运行前自检", "en": "Self-check first"},
     # combos
     "preset_custom": {"zh": "自定义 (下方手动参数生效)", "en": "Custom (sliders below apply)"},
     "preset_lite": {"zh": "轻度增强 (接近原图)", "en": "Light (close to source)"},
@@ -316,11 +322,15 @@ class DLSSNRVideoUpscale(io.ComfyNode):
             is_output_node=True,
             inputs=[
                 io.Video.Input("video", optional=True, tooltip=t("video_path_tt")),
-                io.String.Input("video_path", default="", tooltip=t("video_path_tt")),
+                io.String.Input("video_path", default="",
+                                display_name=t("lbl_video_path"),
+                                tooltip=t("video_path_tt")),
                 io.Combo.Input("sec_preset", options=[sec("sec_preset")],
                                default=sec("sec_preset")),
                 io.Combo.Input("quality_preset", options=_preset_choices(),
-                               default=_preset_choices()[2], tooltip=t("preset_tt")),
+                               default=_preset_choices()[2],
+                               display_name=t("lbl_preset"),
+                               tooltip=t("preset_tt")),
 
                 io.Combo.Input("sec_size", options=[sec("sec_size")],
                                default=sec("sec_size")),
@@ -378,6 +388,10 @@ class DLSSNRVideoUpscale(io.ComfyNode):
                              tooltip=t("cq_tt")),
             ],
             hidden=[io.Hidden.unique_id],
+            outputs=[
+                io.Video.Output("video", display_name=t("log_video")),
+                io.String.Output("file_path"),
+            ],
         )
 
     @classmethod
@@ -467,7 +481,8 @@ class DLSSNRImageUpscale(io.ComfyNode):
             category="image/upscaling",
             description=t("batch_tt"),
             inputs=[
-                io.Image.Input("images", tooltip=t("images_tt")),
+                io.Image.Input("images", display_name=t("lbl_images"),
+                               tooltip=t("images_tt")),
 
                 io.Combo.Input("sec_preset", options=[sec("sec_preset")],
                                default=sec("sec_preset")),
@@ -489,10 +504,10 @@ class DLSSNRImageUpscale(io.ComfyNode):
                 io.Combo.Input("batch_mode",
                                options=[t("batch_independent"), t("batch_sequence")],
                                default=t("batch_independent"),
-                               display_name=t("batch_tt").split(":")[0],
+                               display_name=t("lbl_batch"),
                                tooltip=t("batch_tt")),
                 io.Boolean.Input("self_check", default=False,
-                                 display_name=t("selfcheck_tt").split(" (")[0],
+                                 display_name=t("lbl_selfcheck"),
                                  tooltip=t("selfcheck_tt")),
                 io.Combo.Input("nr_style", options=["0 Default", "1 Natural", "2 Cinematic"],
                                default="0 Default", display_name=t("style_tt").split("。")[0],
