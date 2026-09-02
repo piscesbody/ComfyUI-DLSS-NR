@@ -1,0 +1,5 @@
+# ComfyUI itself already provides everything critical (torch, numpy, Pillow).
+# This is a convenience fallback: supplies an ffmpeg binary when none is on PATH.
+# For the VIDEO node, a full ffmpeg + ffprobe is still recommended:
+#   winget install Gyan.FFmpeg
+imageio-ffmpeg

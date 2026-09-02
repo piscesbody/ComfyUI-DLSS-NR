@@ -1,0 +1,5 @@
+# Local NVIDIA/NGX binaries - never distribute
+runtimes/
+
+__pycache__/
+*.pyc
