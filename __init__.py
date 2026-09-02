@@ -1,6 +1,12 @@
 from comfy_api.latest import ComfyExtension, io
 
+import os
+
 from .nodes import DLSSNRVideoUpscale, DLSSNRImageUpscale
+
+WEB_DIRECTORY = "./web/js"
+
+__all__ = ["comfy_entrypoint", "WEB_DIRECTORY"]
 
 
 class DLSSNRExtension(ComfyExtension):
@@ -14,5 +20,3 @@ class DLSSNRExtension(ComfyExtension):
 def comfy_entrypoint():
     return DLSSNRExtension()
 
-
-__all__ = ["comfy_entrypoint"]
