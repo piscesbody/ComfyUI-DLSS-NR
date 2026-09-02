@@ -326,14 +326,14 @@ class DLSSNRVideoUpscale(io.ComfyNode):
                                 display_name=t("lbl_video_path"),
                                 tooltip=t("video_path_tt")),
                 io.Combo.Input("sec_preset", options=[sec("sec_preset")],
-                               default=sec("sec_preset")),
+                               default=sec("sec_preset"), optional=True),
                 io.Combo.Input("quality_preset", options=_preset_choices(),
                                default=_preset_choices()[2],
                                display_name=t("lbl_preset"),
                                tooltip=t("preset_tt")),
 
                 io.Combo.Input("sec_size", options=[sec("sec_size")],
-                               default=sec("sec_size")),
+                               default=sec("sec_size"), optional=True),
                 io.Combo.Input("upscale_factor",
                                options=["1", "1.5", "2", "3", "4"], default="2",
                                display_name=t("upscale_tt").split("。")[0],
@@ -343,7 +343,7 @@ class DLSSNRVideoUpscale(io.ComfyNode):
                              tooltip=t("out_width_tt")),
 
                 io.Combo.Input("sec_nr", options=[sec("sec_nr")],
-                               default=sec("sec_nr")),
+                               default=sec("sec_nr"), optional=True),
                 io.Combo.Input("nr_style", options=["0 Default", "1 Natural", "2 Cinematic"],
                                default="0 Default", display_name=t("style_tt").split("。")[0],
                                tooltip=t("style_tt")),
@@ -373,7 +373,7 @@ class DLSSNRVideoUpscale(io.ComfyNode):
                                  tooltip=t("auto_mask_tt")),
 
                 io.Combo.Input("sec_enc", options=[sec("sec_enc")],
-                               default=sec("sec_enc")),
+                               default=sec("sec_enc"), optional=True),
                 io.Combo.Input("motion_engine", options=["auto", "nvof", "lk"],
                                default="auto", display_name=t("motion_tt").split("。")[0],
                                tooltip=t("motion_tt")),
@@ -485,12 +485,12 @@ class DLSSNRImageUpscale(io.ComfyNode):
                                tooltip=t("images_tt")),
 
                 io.Combo.Input("sec_preset", options=[sec("sec_preset")],
-                               default=sec("sec_preset")),
+                               default=sec("sec_preset"), optional=True),
                 io.Combo.Input("quality_preset", options=_preset_choices(),
                                default=_preset_choices()[2], tooltip=t("preset_tt")),
 
                 io.Combo.Input("sec_size", options=[sec("sec_size")],
-                               default=sec("sec_size")),
+                               default=sec("sec_size"), optional=True),
                 io.Combo.Input("upscale_factor",
                                options=["1", "1.5", "2", "3", "4"], default="2",
                                display_name=t("upscale_tt").split("。")[0],
@@ -500,7 +500,7 @@ class DLSSNRImageUpscale(io.ComfyNode):
                              tooltip=t("out_width_tt")),
 
                 io.Combo.Input("sec_nr", options=[sec("sec_nr")],
-                               default=sec("sec_nr")),
+                               default=sec("sec_nr"), optional=True),
                 io.Combo.Input("batch_mode",
                                options=[t("batch_independent"), t("batch_sequence")],
                                default=t("batch_independent"),
