@@ -9,10 +9,12 @@ import glob
 import hashlib
 import os
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 
 import folder_paths
+from comfy_api.latest import io, ui
 
 from . import engine
 
@@ -48,7 +50,17 @@ def t(key):
     return T[key][_LANG]
 
 
+def sec(key):
+    """Section separator label, rendered as a single-choice combo bar."""
+    return "━━  " + T[key][_LANG] + "  ━━"
+
+
 T = {
+    # section headers
+    "sec_preset": {"zh": "画质预设", "en": "PRESET"},
+    "sec_size": {"zh": "输出尺寸", "en": "OUTPUT SIZE"},
+    "sec_nr": {"zh": "NR 增强 - 调这些改变细节/色调/皮肤", "en": "NR ENHANCE - detail / tone / skin"},
+    "sec_enc": {"zh": "运动与编码", "en": "MOTION & ENCODING"},
     # node display names
     "video_node": {"zh": "DLSS NR 视频超分 (SR+NR)", "en": "DLSS NR Video Upscale (SR+NR)"},
     "image_node": {"zh": "DLSS NR 图片超分 (SR+NR)", "en": "DLSS NR Image Upscale (SR+NR)"},
@@ -66,8 +78,8 @@ T = {
         "zh": "输入视频完整路径。留空时使用下方 video 输入的磁盘文件。",
         "en": "Full path of the input video. Leave empty to use the file behind the video input."},
     "preset_tt": {
-        "zh": "一键画质方案。选择非自定义项时, 下方的手动 NR 参数全部忽略。",
-        "en": "One-click quality recipe. When not Custom, all manual NR parameters below are ignored."},
+        "zh": "一键画质方案。选择非自定义项时, NR 增强组的手动参数全部忽略。",
+        "en": "One-click quality recipe. When not Custom, all manual NR parameters are ignored."},
     "upscale_tt": {
         "zh": "放大倍率。1 = 不放大, 纯 NR 原生细节增强。",
         "en": "Upscale factor. 1 = no upscale, native-resolution NR enhancement only."},
@@ -119,9 +131,6 @@ T = {
     "selfcheck_tt": {
         "zh": "处理前先跑一次 2 帧功能自检 (约 10 秒)。首次使用或换环境时建议打开。",
         "en": "Run a 2-frame functional self-test before processing (~10s). Useful on first run."},
-    "images_tt": {
-        "zh": "输入图片 batch。",
-        "en": "Input IMAGE batch."},
     # runtime messages
     "err_no_runtime": {
         "zh": "未找到运行时。请把 video2dlssnr.exe、nvngx_dlss.dll、nvngx_dlssnr.dll、nvngx.dll_dlssnr.dll 放入插件 runtimes/default/ 目录。",
@@ -174,9 +183,9 @@ def _runtime_or_raise(runtime):
     found = list_runtimes()
     if not found:
         raise RuntimeError(t("err_no_runtime"))
-    if runtime not in found:
-        return found[0]
-    return runtime
+    if runtime in found:
+        return runtime
+    return found[0]
 
 
 def _sha256(path, limit_mb=400):
@@ -193,7 +202,6 @@ def _sha256(path, limit_mb=400):
 
 
 def _quick_report(runtime):
-    """Fast file/tool presence checks. Returns report lines."""
     exe = os.path.join(RUNTIMES, runtime, "video2dlssnr.exe")
     ok = lambda p: os.path.isfile(p)
     lines = [f"exe: {'OK' if ok(exe) else 'MISSING'} ({exe})"]
@@ -212,13 +220,11 @@ def _quick_report(runtime):
 
 
 def _functional_self_test(runtime):
-    """True 2-frame end-to-end test. Returns (ok, report_lines)."""
     exe = os.path.join(RUNTIMES, runtime, "video2dlssnr.exe")
     lines = [t("selftest_run")]
     ffmpeg = engine.find_tool("ffmpeg")
     if not ffmpeg:
         return False, lines + ["ffmpeg missing"]
-    import tempfile
     try:
         with tempfile.TemporaryDirectory() as td:
             test_in = os.path.join(td, "in.mp4")
@@ -237,8 +243,22 @@ def _functional_self_test(runtime):
         return False, lines
 
 
+_PRESET_KEYS = ["custom", "lite", "standard", "max", "portrait", "night"]
+
+
+def _preset_choices():
+    return [t("preset_" + k) for k in _PRESET_KEYS]
+
+
+def _preset_key_of(value):
+    for k in _PRESET_KEYS:
+        for lang in ("zh", "en"):
+            if value == T["preset_" + k][lang]:
+                return k
+    return "custom"
+
+
 def _effective(preset_key, vals):
-    """Merge a named preset over the manual slider values."""
     PRESETS = {
         "lite": {"style": 0, "intensity": 1.0, "detail": 0.8, "color": 1.0},
         "standard": {"style": 0, "intensity": 1.5, "detail": 1.0, "color": 1.0},
@@ -253,26 +273,6 @@ def _effective(preset_key, vals):
     eff.update(PRESETS[preset_key])
     return eff
 
-
-_PRESET_KEYS = ["custom", "lite", "standard", "max", "portrait", "night"]
-
-
-def _preset_choices():
-    return [t("preset_" + k) for k in _PRESET_KEYS]
-
-
-def _preset_key_of(value):
-    for k in _PRESET_KEYS:
-        if value == t("preset_" + k):
-            return k
-    for k in _PRESET_KEYS:
-        for lang in ("zh", "en"):
-            if value == T["preset_" + k][lang]:
-                return k
-    return "custom"
-
-
-# ----------------------------------------------------------------- shared --
 
 def _make_progress(log, label=None):
     from comfy.utils import ProgressBar
@@ -303,70 +303,97 @@ def _interrupt():
 
 # ------------------------------------------------------------------ nodes --
 
-class DLSSNRVideoUpscale:
+class DLSSNRVideoUpscale(io.ComfyNode):
     """DLSS SR + Neural Rendering upscale for whole video files."""
 
     @classmethod
-    def INPUT_TYPES(cls):
-        req = {
-            "video_path": ("STRING", {"default": "", "multiline": False,
-                                      "tooltip": t("video_path_tt")}),
-            "quality_preset": (_preset_choices(), {"default": _preset_choices()[2],
-                                                   "tooltip": t("preset_tt")}),
-            "upscale_factor": (["1", "1.5", "2", "3", "4"],
-                               {"default": "2", "tooltip": t("upscale_tt")}),
-            "output_width": ("INT", {"default": 0, "min": 0, "max": 7680, "step": 2,
-                                     "tooltip": t("out_width_tt")}),
-            "nr_style": (["0 Default", "1 Natural", "2 Cinematic"],
-                         {"default": "0 Default", "tooltip": t("style_tt")}),
-            "nr_intensity": ("FLOAT", {"default": 1.5, "min": 0.0, "max": 2.0,
-                                       "step": 0.05, "tooltip": t("intensity_tt")}),
-            "nr_detail": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
-                                    "step": 0.05, "tooltip": t("detail_tt")}),
-            "nr_color": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
-                                   "step": 0.05, "tooltip": t("color_tt")}),
-            "nr_skin": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0,
-                                   "step": 0.05, "tooltip": t("skin_tt")}),
-            "nr_structure": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0,
-                                       "step": 0.05, "tooltip": t("structure_tt")}),
-            "nr_tone": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0,
-                                  "step": 0.05, "tooltip": t("tone_tt")}),
-            "nr_global_tone": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0,
-                                         "step": 0.05, "tooltip": t("global_tone_tt")}),
-            "auto_mask": ("BOOLEAN", {"default": False, "tooltip": t("auto_mask_tt")}),
-            "motion_engine": (["auto", "nvof", "lk"],
-                              {"default": "auto", "tooltip": t("motion_tt")}),
-            "gpu_adapter": ("INT", {"default": -1, "min": -1, "max": 8, "step": 1,
-                                    "tooltip": t("adapter_tt")}),
-            "codec": (["hevc_nvenc", "h264_nvenc", "av1_nvenc"],
-                      {"default": "hevc_nvenc", "tooltip": t("codec_tt")}),
-            "cq": ("INT", {"default": 22, "min": 0, "max": 34, "step": 1,
-                           "tooltip": t("cq_tt")}),
-        }
-        runtimes = list_runtimes()
-        if len(runtimes) > 1:
-            req["runtime"] = (runtimes,)
-        return {"required": req, "optional": {"video": ("VIDEO",)}}
+    def define_schema(cls):
+        return io.Schema(
+            node_id="DLSSNRVideoUpscale",
+            display_name=t("video_node"),
+            category="video/upscaling",
+            description=t("preset_tt"),
+            is_output_node=True,
+            inputs=[
+                io.Video.Input("video", optional=True, tooltip=t("video_path_tt")),
+                io.String.Input("video_path", default="", tooltip=t("video_path_tt")),
+                io.Combo.Input("sec_preset", options=[sec("sec_preset")],
+                               default=sec("sec_preset")),
+                io.Combo.Input("quality_preset", options=_preset_choices(),
+                               default=_preset_choices()[2], tooltip=t("preset_tt")),
 
-    RETURN_TYPES = ("VIDEO", "STRING")
-    RETURN_NAMES = ("video", "file_path")
-    FUNCTION = "run"
-    OUTPUT_NODE = True
-    CATEGORY = "video/upscaling"
+                io.Combo.Input("sec_size", options=[sec("sec_size")],
+                               default=sec("sec_size")),
+                io.Combo.Input("upscale_factor",
+                               options=["1", "1.5", "2", "3", "4"], default="2",
+                               display_name=t("upscale_tt").split("。")[0],
+                               tooltip=t("upscale_tt")),
+                io.Int.Input("output_width", default=0, min=0, max=7680, step=2,
+                             display_name=t("out_width_tt").split(" (")[0],
+                             tooltip=t("out_width_tt")),
 
-    def run(self, video_path, quality_preset, upscale_factor, output_width,
-            nr_style, nr_intensity, nr_detail, nr_color, nr_skin, nr_structure,
-            nr_tone, nr_global_tone, auto_mask, motion_engine, gpu_adapter,
-            codec, cq, runtime=None, video=None, unique_id=None):
-        src = video_path.strip().strip('"')
+                io.Combo.Input("sec_nr", options=[sec("sec_nr")],
+                               default=sec("sec_nr")),
+                io.Combo.Input("nr_style", options=["0 Default", "1 Natural", "2 Cinematic"],
+                               default="0 Default", display_name=t("style_tt").split("。")[0],
+                               tooltip=t("style_tt")),
+                io.Float.Input("nr_intensity", default=1.5, min=0.0, max=2.0, step=0.05,
+                               display_name=t("intensity_tt").split(",")[0],
+                               tooltip=t("intensity_tt")),
+                io.Float.Input("nr_detail", default=1.0, min=0.0, max=1.0, step=0.05,
+                               display_name=t("detail_tt").split("。")[0],
+                               tooltip=t("detail_tt")),
+                io.Float.Input("nr_color", default=1.0, min=0.0, max=1.0, step=0.05,
+                               display_name=t("color_tt").split("。")[0],
+                               tooltip=t("color_tt")),
+                io.Float.Input("nr_skin", default=-1.0, min=-1.0, max=2.0, step=0.05,
+                               display_name=t("skin_tt").split("。")[0],
+                               tooltip=t("skin_tt")),
+                io.Float.Input("nr_structure", default=1.0, min=0.0, max=2.0, step=0.05,
+                               display_name=t("structure_tt").split(" (")[0],
+                               tooltip=t("structure_tt")),
+                io.Float.Input("nr_tone", default=1.0, min=0.0, max=2.0, step=0.05,
+                               display_name=t("tone_tt").split(" (")[0],
+                               tooltip=t("tone_tt")),
+                io.Float.Input("nr_global_tone", default=-1.0, min=-1.0, max=2.0, step=0.05,
+                               display_name=t("global_tone_tt").split("。")[0],
+                               tooltip=t("global_tone_tt")),
+                io.Boolean.Input("auto_mask", default=False,
+                                 display_name=t("auto_mask_tt").split(" (")[0],
+                                 tooltip=t("auto_mask_tt")),
+
+                io.Combo.Input("sec_enc", options=[sec("sec_enc")],
+                               default=sec("sec_enc")),
+                io.Combo.Input("motion_engine", options=["auto", "nvof", "lk"],
+                               default="auto", display_name=t("motion_tt").split("。")[0],
+                               tooltip=t("motion_tt")),
+                io.Int.Input("gpu_adapter", default=-1, min=-1, max=8, step=1,
+                             display_name=t("adapter_tt").split("。")[0],
+                             tooltip=t("adapter_tt")),
+                io.Combo.Input("codec", options=["hevc_nvenc", "h264_nvenc", "av1_nvenc"],
+                               default="hevc_nvenc", display_name=t("codec_tt").split("。")[0],
+                               tooltip=t("codec_tt")),
+                io.Int.Input("cq", default=22, min=0, max=34, step=1,
+                             display_name=t("cq_tt").split(",")[0],
+                             tooltip=t("cq_tt")),
+            ],
+            hidden=[io.Hidden.unique_id],
+        )
+
+    @classmethod
+    def execute(cls, video_path, quality_preset, upscale_factor, output_width,
+                nr_style, nr_intensity, nr_detail, nr_color, nr_skin,
+                nr_structure, nr_tone, nr_global_tone, auto_mask,
+                motion_engine, gpu_adapter, codec, cq,
+                runtime=None, video=None, **kwargs):
+        src = (video_path or "").strip().strip('"')
         if not src and video is not None:
-            for attr in ("get_stream_source",):
-                try:
-                    s = getattr(video, attr)()
-                    if isinstance(s, str) and os.path.isfile(s):
-                        src = s
-                except Exception:
-                    pass
+            try:
+                s = video.get_stream_source()
+                if isinstance(s, str) and os.path.isfile(s):
+                    src = s
+            except Exception:
+                pass
         if not src:
             raise ValueError(t("err_need_path"))
         if not os.path.isfile(src):
@@ -374,14 +401,12 @@ class DLSSNRVideoUpscale:
         runtime = _runtime_or_raise(runtime)
 
         pkey = _preset_key_of(quality_preset)
-        manual = {"style": int(nr_style.split(" ")[0]),
-                  "intensity": float(nr_intensity), "detail": float(nr_detail),
-                  "color": float(nr_color), "skin": float(nr_skin),
-                  "local_structure": float(nr_structure),
-                  "local_tone": float(nr_tone),
-                  "global_tone": float(nr_global_tone),
-                  "auto_mask": bool(auto_mask)}
-        eff = _effective(pkey, manual)
+        eff = _effective(pkey, {
+            "style": int(nr_style.split(" ")[0]),
+            "intensity": float(nr_intensity), "detail": float(nr_detail),
+            "color": float(nr_color), "skin": float(nr_skin),
+            "local_structure": float(nr_structure), "local_tone": float(nr_tone),
+            "global_tone": float(nr_global_tone), "auto_mask": bool(auto_mask)})
 
         opts = dict(eff)
         opts.update({
@@ -425,73 +450,98 @@ class DLSSNRVideoUpscale:
         except ImportError:
             from comfy_api.v0_0_2 import InputImpl
         out_video = InputImpl.VideoFromFile(out_path)
-        ui = {"images": [{"filename": os.path.basename(out_path),
-                          "subfolder": "dlssnr", "type": "output"}],
-              "animated": (True,)}
-        return {"ui": ui, "result": (out_video, out_path)}
+        return io.NodeOutput(
+            out_video, out_path,
+            ui=ui.PreviewVideo([ui.SavedResult(os.path.basename(out_path),
+                                               "dlssnr", io.FolderType.output)]))
 
 
-class DLSSNRImageUpscale:
+class DLSSNRImageUpscale(io.ComfyNode):
     """DLSS SR + Neural Rendering for IMAGE batches (self-check included)."""
 
     @classmethod
-    def INPUT_TYPES(cls):
-        req = {
-            "images": ("IMAGE", {"tooltip": t("images_tt")}),
-            "quality_preset": (_preset_choices(), {"default": _preset_choices()[2],
-                                                   "tooltip": t("preset_tt")}),
-            "upscale_factor": (["1", "1.5", "2", "3", "4"],
-                               {"default": "2", "tooltip": t("upscale_tt")}),
-            "output_width": ("INT", {"default": 0, "min": 0, "max": 7680, "step": 2,
-                                     "tooltip": t("out_width_tt")}),
-            "batch_mode": (_batch_choices(), {"default": _batch_choices()[0],
-                                              "tooltip": t("batch_tt")}),
-            "self_check": ("BOOLEAN", {"default": False,
-                                       "tooltip": t("selfcheck_tt")}),
-            "nr_style": (["0 Default", "1 Natural", "2 Cinematic"],
-                         {"default": "0 Default", "tooltip": t("style_tt")}),
-            "nr_intensity": ("FLOAT", {"default": 1.5, "min": 0.0, "max": 2.0,
-                                       "step": 0.05, "tooltip": t("intensity_tt")}),
-            "nr_detail": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
-                                    "step": 0.05, "tooltip": t("detail_tt")}),
-            "nr_color": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
-                                   "step": 0.05, "tooltip": t("color_tt")}),
-            "nr_skin": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0,
-                                   "step": 0.05, "tooltip": t("skin_tt")}),
-            "nr_structure": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0,
-                                       "step": 0.05, "tooltip": t("structure_tt")}),
-            "nr_tone": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0,
-                                  "step": 0.05, "tooltip": t("tone_tt")}),
-            "nr_global_tone": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0,
-                                         "step": 0.05, "tooltip": t("global_tone_tt")}),
-            "auto_mask": ("BOOLEAN", {"default": False, "tooltip": t("auto_mask_tt")}),
-        }
-        runtimes = list_runtimes()
-        if len(runtimes) > 1:
-            req["runtime"] = (runtimes,)
-        return {"required": req}
+    def define_schema(cls):
+        return io.Schema(
+            node_id="DLSSNRImageUpscale",
+            display_name=t("image_node"),
+            category="image/upscaling",
+            description=t("batch_tt"),
+            inputs=[
+                io.Image.Input("images", tooltip=t("images_tt")),
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    FUNCTION = "run"
-    CATEGORY = "image/upscaling"
+                io.Combo.Input("sec_preset", options=[sec("sec_preset")],
+                               default=sec("sec_preset")),
+                io.Combo.Input("quality_preset", options=_preset_choices(),
+                               default=_preset_choices()[2], tooltip=t("preset_tt")),
 
-    def run(self, images, quality_preset, upscale_factor, output_width,
-            batch_mode, self_check, nr_style, nr_intensity, nr_detail,
-            nr_color, nr_skin, nr_structure, nr_tone, nr_global_tone,
-            auto_mask, runtime=None):
+                io.Combo.Input("sec_size", options=[sec("sec_size")],
+                               default=sec("sec_size")),
+                io.Combo.Input("upscale_factor",
+                               options=["1", "1.5", "2", "3", "4"], default="2",
+                               display_name=t("upscale_tt").split("。")[0],
+                               tooltip=t("upscale_tt")),
+                io.Int.Input("output_width", default=0, min=0, max=7680, step=2,
+                             display_name=t("out_width_tt").split(" (")[0],
+                             tooltip=t("out_width_tt")),
+
+                io.Combo.Input("sec_nr", options=[sec("sec_nr")],
+                               default=sec("sec_nr")),
+                io.Combo.Input("batch_mode",
+                               options=[t("batch_independent"), t("batch_sequence")],
+                               default=t("batch_independent"),
+                               display_name=t("batch_tt").split(":")[0],
+                               tooltip=t("batch_tt")),
+                io.Boolean.Input("self_check", default=False,
+                                 display_name=t("selfcheck_tt").split(" (")[0],
+                                 tooltip=t("selfcheck_tt")),
+                io.Combo.Input("nr_style", options=["0 Default", "1 Natural", "2 Cinematic"],
+                               default="0 Default", display_name=t("style_tt").split("。")[0],
+                               tooltip=t("style_tt")),
+                io.Float.Input("nr_intensity", default=1.5, min=0.0, max=2.0, step=0.05,
+                               display_name=t("intensity_tt").split(",")[0],
+                               tooltip=t("intensity_tt")),
+                io.Float.Input("nr_detail", default=1.0, min=0.0, max=1.0, step=0.05,
+                               display_name=t("detail_tt").split("。")[0],
+                               tooltip=t("detail_tt")),
+                io.Float.Input("nr_color", default=1.0, min=0.0, max=1.0, step=0.05,
+                               display_name=t("color_tt").split("。")[0],
+                               tooltip=t("color_tt")),
+                io.Float.Input("nr_skin", default=-1.0, min=-1.0, max=2.0, step=0.05,
+                               display_name=t("skin_tt").split("。")[0],
+                               tooltip=t("skin_tt")),
+                io.Float.Input("nr_structure", default=1.0, min=0.0, max=2.0, step=0.05,
+                               display_name=t("structure_tt").split(" (")[0],
+                               tooltip=t("structure_tt")),
+                io.Float.Input("nr_tone", default=1.0, min=0.0, max=2.0, step=0.05,
+                               display_name=t("tone_tt").split(" (")[0],
+                               tooltip=t("tone_tt")),
+                io.Float.Input("nr_global_tone", default=-1.0, min=-1.0, max=2.0, step=0.05,
+                               display_name=t("global_tone_tt").split("。")[0],
+                               tooltip=t("global_tone_tt")),
+                io.Boolean.Input("auto_mask", default=False,
+                                 display_name=t("auto_mask_tt").split(" (")[0],
+                                 tooltip=t("auto_mask_tt")),
+            ],
+            outputs=[
+                io.Image.Output("images", display_name=t("images_tt")),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, images, quality_preset, upscale_factor, output_width,
+                batch_mode, self_check, nr_style, nr_intensity, nr_detail,
+                nr_color, nr_skin, nr_structure, nr_tone, nr_global_tone,
+                auto_mask, runtime=None, **kwargs):
         runtime = _runtime_or_raise(runtime)
         exe = os.path.join(RUNTIMES, runtime, "video2dlssnr.exe")
 
         pkey = _preset_key_of(quality_preset)
-        manual = {"style": int(nr_style.split(" ")[0]),
-                  "intensity": float(nr_intensity), "detail": float(nr_detail),
-                  "color": float(nr_color), "skin": float(nr_skin),
-                  "local_structure": float(nr_structure),
-                  "local_tone": float(nr_tone),
-                  "global_tone": float(nr_global_tone),
-                  "auto_mask": bool(auto_mask)}
-        eff = _effective(pkey, manual)
+        eff = _effective(pkey, {
+            "style": int(nr_style.split(" ")[0]),
+            "intensity": float(nr_intensity), "detail": float(nr_detail),
+            "color": float(nr_color), "skin": float(nr_skin),
+            "local_structure": float(nr_structure), "local_tone": float(nr_tone),
+            "global_tone": float(nr_global_tone), "auto_mask": bool(auto_mask)})
 
         opts = dict(eff)
         opts.update({"exe": exe, "scale": float(upscale_factor),
@@ -516,8 +566,8 @@ class DLSSNRImageUpscale:
 
         b, inH, inW = images.shape[0], images.shape[1], images.shape[2]
         outW, outH = engine._output_size(opts, inW, inH)
-        sequence = (batch_mode == t("batch_sequence")
-                    or batch_mode == T["batch_sequence"]["en"])
+        sequence = batch_mode in (t("batch_sequence"),
+                                  T["batch_sequence"]["en"])
         pbar_progress = _make_progress(_log, t("log_image"))
 
         try:
@@ -537,11 +587,10 @@ class DLSSNRImageUpscale:
                 _log(t("log_done").format(frames=b, mb=0,
                                           fps=max(gpu_fps, b / wall),
                                           sec=wall, w=outW, h=outH))
-                return (torch.from_numpy(
-                    np.stack(outs).astype("float32") / 255.0),)
+                return io.NodeOutput(torch.from_numpy(
+                    np.stack(outs).astype("float32") / 255.0))
 
             outs = []
-            import tempfile
             with tempfile.TemporaryDirectory() as work:
                 for i in range(b):
                     _interrupt()
@@ -553,22 +602,11 @@ class DLSSNRImageUpscale:
                     out = np.asarray(Image.open(out_png).convert("RGB"))
                     outs.append(torch.from_numpy(out.astype("float32") / 255.0))
                     pbar_progress(i + 1, b, 0.0)
-            return (torch.stack(outs, dim=0),)
+            return io.NodeOutput(torch.stack(outs, dim=0))
         except engine.PipelineError as e:
             report = "\n".join(_quick_report(runtime))
             raise RuntimeError(f"{e}\n---- {t('err_diag')} ----\n{report}") from e
 
 
-def _batch_choices():
-    return [t("batch_independent"), t("batch_sequence")]
-
-
-NODE_CLASS_MAPPINGS = {
-    "DLSSNRVideoUpscale": DLSSNRVideoUpscale,
-    "DLSSNRImageUpscale": DLSSNRImageUpscale,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "DLSSNRVideoUpscale": t("video_node"),
-    "DLSSNRImageUpscale": t("image_node"),
-}
+# image tooltip lives with the others
+T["images_tt"] = {"zh": "输入图片 batch。", "en": "Input IMAGE batch."}
