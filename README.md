@@ -67,17 +67,23 @@ ComfyUI/custom_nodes/ComfyUI-DLSS-NR/
 ```
 
 1. 克隆或下载本仓库到上面的目录
-2. 准备运行时，放进 `runtimes/default/`，**四个文件缺一不可**：
+2. 运行一键安装（在插件目录里）：
 
-| 文件 | 哪里来 |
-|---|---|
-| `video2dlssnr.exe` | [video2dlssnr releases](https://github.com/DaniilSokolyuk/video2dlssnr/releases) |
-| `nvngx.dll_dlssnr.dll` | 同上，release 包里带着 |
-| `nvngx_dlss.dll` | [NVIDIA DLSS SDK 官方仓库](https://github.com/NVIDIA/DLSS) `lib/Windows_x86_64/rel/` |
-| `nvngx_dlssnr.dll` | 自备。从支持 DLSS 5 的游戏目录提取，或社区 DLL 整理包。**NVIDIA 专有文件，本仓库不分发** |
+```
+python install.py
+```
 
-3. 视频节点需要系统有 ffmpeg：`winget install Gyan.FFmpeg`
-4. 重启 ComfyUI，先加一个图片节点、勾上"运行前自检"跑一次，确认环境没问题
+它会自动从上游 [video2dlssnr v1.2 release](https://github.com/DaniilSokolyuk/video2dlssnr/releases)（该版本已打包全部组件）下载并安装四件套：
+
+- `video2dlssnr.exe`
+- `nvngx.dll_dlssnr.dll`
+- `nvngx_dlss.dll`
+- `nvngx_dlssnr.dll`
+
+全部文件都从原作者的官方 release 页面拉取，本仓库不分发任何二进制。已装好的文件不会重复下载；`--force` 可以强制重新下载。
+
+3. 视频节点需要系统有 ffmpeg：`winget install Gyan.FFmpeg`（图片节点不需要）
+4. 重启 ComfyUI，加一个图片节点、勾上"运行前自检"跑一次，确认环境没问题
 
 ## 环境要求
 
