@@ -408,6 +408,13 @@ class DLSSNRVideoUpscale(io.ComfyNode):
                     src = s
             except Exception:
                 pass
+            if not src:
+                # in-memory video (e.g. CreateVideo output) has no file path;
+                # materialize it first so the file pipeline can process it
+                tmp_dir = os.path.join(folder_paths.get_temp_directory(), "dlssnr")
+                os.makedirs(tmp_dir, exist_ok=True)
+                src = os.path.join(tmp_dir, f"video_{kwargs.get('unique_id', '0')}.mp4")
+                video.save_to(src)
         if not src:
             raise ValueError(t("err_need_path"))
         if not os.path.isfile(src):
