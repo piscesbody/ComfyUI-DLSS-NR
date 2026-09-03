@@ -89,6 +89,57 @@ function repairLegacyValues(node) {
     return true;
 }
 
+// Widgets are saved in the restyled (schema) order with null at each sec_*
+// slot, but litegraph assigns widgets_values in its own build order, where
+// the frontend pushes sec_* widgets to the END of node.widgets. Positions
+// therefore disagree and every load scrambles the parameters. Detect the
+// current format by that null pattern and restore strictly by NAME.
+const SCHEMA_ORDER = ["video", "video_path", "sec_preset", "quality_preset",
+    "sec_size", "upscale_factor", "output_width", "sec_nr", "nr_style",
+    "nr_intensity", "nr_detail", "nr_color", "nr_skin", "nr_structure",
+    "nr_tone", "nr_global_tone", "auto_mask", "batch_mode", "self_check",
+    "sec_enc", "motion_engine", "gpu_adapter", "codec", "cq"];
+
+const rankOf = (w) => {
+    const i = SCHEMA_ORDER.indexOf(String(w.name));
+    return i === -1 ? 999 : i;
+};
+
+function restoreCurrentFormat(node) {
+    const vals = node.widgets_values;
+    if (!Array.isArray(vals) || !Array.isArray(node.widgets)) return false;
+    if (!node.widgets.some((w) => String(w.name).startsWith("sec_"))) return false;
+
+    const namesR = [...node.widgets]
+        .sort((a, b) => rankOf(a) - rankOf(b))
+        .map((w) => String(w.name));
+    if (vals.length !== namesR.length) return false;
+    const patternOk = namesR.every((n, i) => {
+        const v = vals[i];
+        if (n.startsWith("sec_")) {
+            return v === null || v === undefined ||
+                (typeof v === "string" && v.startsWith("━━"));
+        }
+        return v !== null && v !== undefined;
+    });
+    if (!patternOk) return false;
+
+    const byName = {};
+    namesR.forEach((n, i) => {
+        if (!n.startsWith("sec_")) byName[n] = vals[i];
+    });
+    node.widgets.forEach((w) => {
+        if (String(w.name).startsWith("sec_")) return;
+        if (w.name in byName && w.value !== byName[w.name]) w.value = byName[w.name];
+    });
+    node.widgets_values = node.widgets
+        .filter((w) => !String(w.name).startsWith("sec_"))
+        .map((w) => w.value);
+    node.setDirtyCanvas?.(true, true);
+    console.log("[DLSS-NR] restored parameters by name (", namesR.length, "values)");
+    return true;
+}
+
 function styleSectionWidget(w) {
     if (w._dlssnrBar) return;
     w._dlssnrBar = true;
@@ -132,17 +183,8 @@ function restyle(node) {
     }
     if (!Object.keys(bars).length) return;
     // reassemble in schema order
-    const order = ["video", "video_path", "sec_preset", "quality_preset",
-        "sec_size", "upscale_factor", "output_width", "sec_nr", "nr_style",
-        "nr_intensity", "nr_detail", "nr_color", "nr_skin", "nr_structure",
-        "nr_tone", "nr_global_tone", "auto_mask", "batch_mode", "self_check",
-        "sec_enc", "motion_engine", "gpu_adapter", "codec", "cq"];
-    const rank = (w) => {
-        const i = order.indexOf(w.name);
-        return i === -1 ? 999 : i;
-    };
     const merged = [...rest, ...Object.values(bars)]
-        .sort((a, b) => rank(a) - rank(b));
+        .sort((a, b) => rankOf(a) - rankOf(b));
     node.widgets.length = 0;
     node.widgets.push(...merged);
     node._dlssnrBarDone = true;
@@ -162,7 +204,7 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             const r = onConfigure?.apply(this, arguments);
-            repairLegacyValues(this);
+            if (!repairLegacyValues(this)) restoreCurrentFormat(this);
             restyle(this);
             return r;
         };
