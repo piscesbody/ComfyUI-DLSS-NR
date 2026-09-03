@@ -8,6 +8,12 @@
 
 上图：原图 bicubic 放大（左） vs 本插件 DLSS SR+NR 2x（右）。注意铠甲上的雕刻纹路和金属磨损细节。
 
+### 人像特写效果
+
+1376×768 的人像特写镜头，2 倍超分。额饰的珍珠链、眉毛、睫毛都拉开了层次；「人像保护」预设专门控制了皮肤处理——细节上去了，皮肤没有"磨皮感"，这是和「细节拉满」最大的区别。人像素材建议用前者。
+
+![人像效果](img/effect_face.png)
+
 ## 这是什么
 
 两个 ComfyUI 节点，底层调用 [video2dlssnr](https://github.com/DaniilSokolyuk/video2dlssnr)（ DaniilSokolyuk 的 DLSS5 命令行工具，在此致谢）：
