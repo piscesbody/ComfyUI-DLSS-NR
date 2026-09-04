@@ -43,12 +43,25 @@ const LEGACY_NAMES = {
              "nr_style", "nr_intensity", "nr_detail", "nr_color", "nr_skin",
              "nr_structure", "nr_tone", "nr_global_tone", "auto_mask",
              "motion_engine", "gpu_adapter", "codec", "cq"],
+        // v0.4 / v0.4.2: 21 values = 17 params + 4 sec_* nulls, saved in
+        // restyled (schema) order; output_width sits between factor and sec_nr
+        21: ["video_path", null, "quality_preset", null, "upscale_factor",
+             "output_width", null, "nr_style", "nr_intensity", "nr_detail",
+             "nr_color", "nr_skin", "nr_structure", "nr_tone",
+             "nr_global_tone", "auto_mask", null, "motion_engine",
+             "gpu_adapter", "codec", "cq"],
     },
     DLSSNRImageUpscale: {
         9: [null, "runtime", "upscale_factor", "output_width", "nr_style",
             "nr_preset", "nr_intensity", "nr_detail", "nr_color"],
         15: [null, "quality_preset", "upscale_factor", "output_width",
              "batch_mode", "self_check", "nr_style", "nr_intensity",
+             "nr_detail", "nr_color", "nr_skin", "nr_structure", "nr_tone",
+             "nr_global_tone", "auto_mask"],
+        // v0.4 / v0.4.2: section bars serialized as null in schema order
+        // (17 = 14 params + sec_preset/sec_size/sec_nr nulls)
+        17: [null, "quality_preset", null, "upscale_factor", "output_width",
+             null, "batch_mode", "self_check", "nr_style", "nr_intensity",
              "nr_detail", "nr_color", "nr_skin", "nr_structure", "nr_tone",
              "nr_global_tone", "auto_mask"],
     },
@@ -70,9 +83,16 @@ function repairLegacyValues(node) {
 
     node.widgets?.forEach((w) => {
         if (String(w.name).startsWith("sec_")) return;
-        if (!(w.name in byName)) return;
+        if (!(w.name in byName)) {
+            // widget did not exist in the legacy layout (e.g. sr_preset in a
+            // v0.4 file): litegraph position-assigned a stray value. Reset to
+            // the Python-side default captured on a fresh node build.
+            const fresh = DEFAULTS[cls]?.[w.name];
+            if (fresh !== undefined) w.value = fresh;
+            return;
+        }
         let v = byName[w.name];
-        if (w.name === "motion_engine") v = "auto";          // 0/1 -> auto/nvof/lk
+        if (w.name === "motion_engine" && typeof v === "number") v = "auto"; // 0/1 -> auto/nvof/lk
         if (w.name === "nr_style" && !String(v).includes(" ")) {
             const n = parseInt(v);
             if (!isNaN(n)) v = n + " Default";
@@ -96,13 +116,22 @@ function repairLegacyValues(node) {
 // current format by that null pattern and restore strictly by NAME.
 const SCHEMA_ORDER = ["video", "video_path", "sec_preset", "quality_preset",
     "sec_size", "upscale_factor", "output_width", "sec_nr", "nr_style",
-    "nr_intensity", "nr_detail", "nr_color", "nr_skin", "nr_structure",
-    "nr_tone", "nr_global_tone", "auto_mask", "batch_mode", "self_check",
-    "sec_enc", "motion_engine", "gpu_adapter", "codec", "cq"];
+    "sr_preset", "nr_intensity", "nr_detail", "nr_color", "nr_skin",
+    "nr_structure", "nr_tone", "nr_global_tone", "auto_mask", "batch_mode",
+    "self_check", "sec_enc", "motion_engine", "gpu_adapter", "codec",
+    "bit_depth", "cq", "bitrate", "enc_preset", "audio_mode", "audio_bitrate"];
 
 const rankOf = (w) => {
     const i = SCHEMA_ORDER.indexOf(String(w.name));
     return i === -1 ? 999 : i;
+};
+
+// Python-side defaults for widgets added after v0.4.2, used when migrating
+// legacy workflows whose value arrays never contained them.
+const DEFAULTS = {
+    DLSSNRVideoUpscale: { sr_preset: "default", bit_depth: "10", cq: 19,
+                          bitrate: 0, enc_preset: "p5", audio_bitrate: 192 },
+    DLSSNRImageUpscale: { sr_preset: "default" },
 };
 
 function restoreCurrentFormat(node) {

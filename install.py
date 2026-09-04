@@ -25,13 +25,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNTIME = os.path.join(HERE, "runtimes", "default")
 
 RELEASE_URL = ("https://github.com/DaniilSokolyuk/video2dlssnr/releases/"
-               "download/v1.2/video2dlssnr_release.zip")
+               "download/v1.3/video2dlssnr_release.zip")
 WANTED = [
     "video2dlssnr/out/video2dlssnr.exe",
     "video2dlssnr/out/nvngx.dll_dlssnr.dll",
     "video2dlssnr/out/nvngx_dlss.dll",
     "video2dlssnr/out/nvngx_dlssnr.dll",
 ]
+
+# exe versions below this lack --nr-sr-preset and friends (upstream v1.3+)
+MIN_EXE_BYTES = 441856
 
 
 def log(msg):
@@ -93,7 +96,7 @@ def main():
         # the release zip carries every component; one download covers all
         zpath = download(RELEASE_URL, os.path.join(HERE, "runtimes",
                                                    "upstream.zip"),
-                         "video2dlssnr v1.2 release (all components)")
+                         "video2dlssnr v1.3 release (all components)")
         log("extracting ...")
         with zipfile.ZipFile(zpath) as z:
             for member in WANTED:
@@ -117,6 +120,11 @@ def main():
         present = have(name)
         ok &= present
         log(f"  {name}: {'OK' if present else 'MISSING'}")
+    exe_path = os.path.join(RUNTIME, "video2dlssnr.exe")
+    if have("video2dlssnr.exe") and \
+            os.path.getsize(exe_path) < MIN_EXE_BYTES:
+        log("  ! video2dlssnr.exe is an old upstream release; the SR preset")
+        log("    and 10-bit options need v1.3. Re-run:  python install.py --force")
     if not check_ffmpeg():
         log("  ffmpeg: not found - the VIDEO node needs it.")
         log("  install with:  winget install Gyan.FFmpeg")

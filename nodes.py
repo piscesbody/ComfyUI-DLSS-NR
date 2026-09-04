@@ -126,11 +126,32 @@ T = {
         "zh": "选择 NVIDIA 显卡。-1=自动选最快的一张。双卡时可把超分丢给副卡。",
         "en": "NVIDIA adapter index. -1=fastest. Use a secondary GPU for upscaling."},
     "codec_tt": {
-        "zh": "编码器。hevc=体积小(默认) h264=兼容性最好 av1=最新(体积最小)。",
-        "en": "Encoder. hevc=small (default) h264=best compatibility av1=newest/smallest."},
+        "zh": "编码器。hevc=体积小(默认) h264=兼容性最好 av1=最新(体积最小)。prores=剪辑软件友好(ffv1=无损母带, av1_svt=CPU编码)。",
+        "en": "Encoder. hevc=small (default) h264=best compatibility av1=newest/smallest. prores=editor-friendly (ffv1=lossless master, av1_svt=CPU)."},
     "cq_tt": {
-        "zh": "画质值, 越小质量越高。18=高 22=均衡 26=省体积。0=编码器默认。",
-        "en": "Constant quality. Lower=better. 18=high 22=balanced 26=small. 0=encoder default."},
+        "zh": "画质值, 越小质量越高。18=高 22=均衡 26=省体积。",
+        "en": "Constant quality. Lower=better. 18=high 22=balanced 26=small."},
+    "sr_preset_tt": {
+        "zh": "DLSS SR 超分模型。default=驱动自动选(最新transformer); E/F=CNN,更平滑; J/K/L/M=transformer,细节更锐。人像建议 default 或 E, 机甲/建筑可试 K。",
+        "en": "DLSS SR model. default=driver picks (newest transformer); E/F=CNN smoother; J/K/L/M=transformer sharper. Portraits: default or E; mecha/architecture: try K."},
+    "bit_depth_tt": {
+        "zh": "输出位深。10-bit=渐变更平滑、色带更少 (天空/暗场明显); 8-bit=播放器兼容性最好。h264 不支持 10-bit。",
+        "en": "Output bit depth. 10-bit=smoother gradients, less banding (skies/dark scenes); 8-bit=max compatibility. h264 is 8-bit only."},
+    "enc_preset_tt": {
+        "zh": "NVENC 编码预设。p1 最快, p7 质量最好, 默认 p5。一般不用动。",
+        "en": "NVENC preset. p1 fastest, p7 best quality, default p5. Leave as is unless benchmarking."},
+    "bitrate_tt": {
+        "zh": "目标码率 kbps (0=用上面的画质值)。固定码率便于估计文件大小。",
+        "en": "Target bitrate kbps (0=use CQ above). Fixed bitrate for predictable file size."},
+    "audio_mode_tt": {
+        "zh": "音频。auto=容器允许就原样复制, 否则转 AAC; 也可强制指定或去掉音轨。",
+        "en": "Audio. auto=copy if the container allows, else re-encode to AAC; or force a codec / drop audio."},
+    "audio_bitrate_tt": {
+        "zh": "音频码率 kbps (aac/opus 时生效)。",
+        "en": "Audio bitrate kbps (used for aac/opus)."},
+    "audio_auto": {"zh": "自动 (尽量保留原音轨)", "en": "Auto (copy when possible)"},
+    "audio_copy": {"zh": "原样复制", "en": "Copy"},
+    "audio_none": {"zh": "去掉音轨", "en": "No audio"},
     "batch_tt": {
         "zh": "独立图片: 每张单独处理, 互不影响, 适合无关图。帧序列: 整批一次会话流式处理, 快且带时域连续, 仅适合同一视频拆出的帧。",
         "en": "Still: each image processed separately. Sequence: whole batch in one session - faster with temporal continuity, only for frames of the same clip."},
@@ -347,6 +368,11 @@ class DLSSNRVideoUpscale(io.ComfyNode):
                 io.Combo.Input("nr_style", options=["0 Default", "1 Natural", "2 Cinematic"],
                                default="0 Default", display_name=t("style_tt").split("。")[0],
                                tooltip=t("style_tt")),
+                io.Combo.Input("sr_preset",
+                               options=["default", "E", "F", "J", "K", "L", "M"],
+                               default="default",
+                               display_name=t("sr_preset_tt").split("。")[0],
+                               tooltip=t("sr_preset_tt")),
                 io.Float.Input("nr_intensity", default=1.5, min=0.0, max=2.0, step=0.05,
                                display_name=t("intensity_tt").split(",")[0],
                                tooltip=t("intensity_tt")),
@@ -380,12 +406,33 @@ class DLSSNRVideoUpscale(io.ComfyNode):
                 io.Int.Input("gpu_adapter", default=-1, min=-1, max=8, step=1,
                              display_name=t("adapter_tt").split("。")[0],
                              tooltip=t("adapter_tt")),
-                io.Combo.Input("codec", options=["hevc_nvenc", "h264_nvenc", "av1_nvenc"],
+                io.Combo.Input("codec",
+                               options=["hevc_nvenc", "h264_nvenc", "av1_nvenc",
+                                        "av1_svt", "prores", "ffv1"],
                                default="hevc_nvenc", display_name=t("codec_tt").split("。")[0],
                                tooltip=t("codec_tt")),
-                io.Int.Input("cq", default=22, min=0, max=34, step=1,
+                io.Combo.Input("bit_depth", options=["10", "8"], default="10",
+                               display_name=t("bit_depth_tt").split("。")[0],
+                               tooltip=t("bit_depth_tt")),
+                io.Int.Input("cq", default=19, min=0, max=34, step=1,
                              display_name=t("cq_tt").split(",")[0],
                              tooltip=t("cq_tt")),
+                io.Int.Input("bitrate", default=0, min=0, max=200000, step=100,
+                             display_name=t("bitrate_tt").split(" (")[0],
+                             tooltip=t("bitrate_tt")),
+                io.Combo.Input("enc_preset",
+                               options=["p1", "p2", "p3", "p4", "p5", "p6", "p7"],
+                               default="p5", display_name=t("enc_preset_tt").split("。")[0],
+                               tooltip=t("enc_preset_tt")),
+                io.Combo.Input("audio_mode",
+                               options=[t("audio_auto"), t("audio_copy"), "aac",
+                                        "opus", "flac", "pcm", t("audio_none")],
+                               default=t("audio_auto"),
+                               display_name=t("audio_mode_tt").split("。")[0],
+                               tooltip=t("audio_mode_tt")),
+                io.Int.Input("audio_bitrate", default=192, min=64, max=512, step=32,
+                             display_name=t("audio_bitrate_tt").split(" (")[0],
+                             tooltip=t("audio_bitrate_tt")),
             ],
             hidden=[io.Hidden.unique_id],
             outputs=[
@@ -396,9 +443,10 @@ class DLSSNRVideoUpscale(io.ComfyNode):
 
     @classmethod
     def execute(cls, video_path, quality_preset, upscale_factor, output_width,
-                nr_style, nr_intensity, nr_detail, nr_color, nr_skin,
+                nr_style, sr_preset, nr_intensity, nr_detail, nr_color, nr_skin,
                 nr_structure, nr_tone, nr_global_tone, auto_mask,
-                motion_engine, gpu_adapter, codec, cq,
+                motion_engine, gpu_adapter, codec, bit_depth, cq, bitrate,
+                enc_preset, audio_mode, audio_bitrate,
                 runtime=None, video=None, **kwargs):
         src = (video_path or "").strip().strip('"')
         if not src and video is not None:
@@ -430,22 +478,32 @@ class DLSSNRVideoUpscale(io.ComfyNode):
             "global_tone": float(nr_global_tone), "auto_mask": bool(auto_mask)})
 
         opts = dict(eff)
+        audio_map = {t("audio_auto"): "auto", t("audio_copy"): "copy",
+                     t("audio_none"): "none"}
+        audio_m = audio_map.get(audio_mode, audio_mode)
+        ext_map = {"prores": ".mov", "ffv1": ".mkv"}
+        out_ext = ext_map.get(codec, ".mp4")
         opts.update({
             "exe": os.path.join(RUNTIMES, runtime, "video2dlssnr.exe"),
             "scale": float(upscale_factor),
             "out_size": (int(output_width), 0) if output_width else None,
             "motion": True, "motion_engine": motion_engine,
             "adapter": int(gpu_adapter),
-            "codec": codec, "cq": int(cq), "audio": True,
+            "sr_preset": sr_preset,
+            "codec": codec, "bit_depth": int(bit_depth), "cq": int(cq),
+            "bitrate": int(bitrate), "enc_preset": enc_preset,
+            "audio": audio_m != "none", "audio_mode": audio_m,
+            "audio_bitrate": int(audio_bitrate),
         })
 
         out_dir = os.path.join(folder_paths.get_output_directory(), "dlssnr")
         os.makedirs(out_dir, exist_ok=True)
         stem = os.path.splitext(os.path.basename(src))[0]
-        out_path = os.path.join(out_dir, f"{stem}_x{upscale_factor}.mp4")
+        out_path = os.path.join(out_dir, f"{stem}_x{upscale_factor}{out_ext}")
         n = 1
         while os.path.isfile(out_path):
-            out_path = os.path.join(out_dir, f"{stem}_x{upscale_factor}_{n}.mp4")
+            out_path = os.path.join(out_dir,
+                                    f"{stem}_x{upscale_factor}_{n}{out_ext}")
             n += 1
 
         _log(t("log_start_video").format(src=src, out=out_path))
@@ -519,6 +577,11 @@ class DLSSNRImageUpscale(io.ComfyNode):
                 io.Combo.Input("nr_style", options=["0 Default", "1 Natural", "2 Cinematic"],
                                default="0 Default", display_name=t("style_tt").split("。")[0],
                                tooltip=t("style_tt")),
+                io.Combo.Input("sr_preset",
+                               options=["default", "E", "F", "J", "K", "L", "M"],
+                               default="default",
+                               display_name=t("sr_preset_tt").split("。")[0],
+                               tooltip=t("sr_preset_tt")),
                 io.Float.Input("nr_intensity", default=1.5, min=0.0, max=2.0, step=0.05,
                                display_name=t("intensity_tt").split(",")[0],
                                tooltip=t("intensity_tt")),
@@ -551,9 +614,9 @@ class DLSSNRImageUpscale(io.ComfyNode):
 
     @classmethod
     def execute(cls, images, quality_preset, upscale_factor, output_width,
-                batch_mode, self_check, nr_style, nr_intensity, nr_detail,
-                nr_color, nr_skin, nr_structure, nr_tone, nr_global_tone,
-                auto_mask, runtime=None, **kwargs):
+                batch_mode, self_check, nr_style, sr_preset, nr_intensity,
+                nr_detail, nr_color, nr_skin, nr_structure, nr_tone,
+                nr_global_tone, auto_mask, runtime=None, **kwargs):
         runtime = _runtime_or_raise(runtime)
         exe = os.path.join(RUNTIMES, runtime, "video2dlssnr.exe")
 
@@ -567,7 +630,7 @@ class DLSSNRImageUpscale(io.ComfyNode):
 
         opts = dict(eff)
         opts.update({"exe": exe, "scale": float(upscale_factor),
-                     "width": int(output_width)})
+                     "width": int(output_width), "sr_preset": sr_preset})
 
         _log(t("log_start_image").format(n=images.shape[0], mode=batch_mode))
         _log(t("log_params").format(

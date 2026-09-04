@@ -14,6 +14,18 @@
 
 ![人像效果](img/effect_face.png)
 
+### v0.5 新增：SR 模型选择（transformer 锐利预设）
+
+v0.5 移植了上游 v1.3 的 `--nr-sr-preset`，可以在多档 DLSS 超分模型里选：default=驱动自动选（最新 transformer），E/F=CNN 更平滑，J/K/L/M=transformer 更锐。下面两张图用 1376×768 的视频帧 2 倍超分，SR 模型选 **K**（transformer 锐利档）+ NR 强度 1.5，左边是 Lanczos 放大的原图对照。
+
+竹林外景人脸：睫毛、发丝、耳环珠链在 DLSS 侧拉开了层次，唇线和皮肤纹理更干净；男侧逆光轮廓的边缘振铃也压住了。
+
+![v0.5 竹林人脸对比](img/effect_v05_93.png)
+
+暗光科幻人像：低照度噪点被 NR 抹平的同时，眉毛、眼睑和领口金属纹章的棱线反而更锐——transformer 模型在暗场上"细节重建 vs 降噪"的平衡比传统放大明显。
+
+![v0.5 暗光人像对比](img/effect_v05_118.png)
+
 ## 这是什么
 
 两个 ComfyUI 节点，底层调用 [video2dlssnr](https://github.com/DaniilSokolyuk/video2dlssnr)（ DaniilSokolyuk 的 DLSS5 命令行工具，在此致谢）：
@@ -56,13 +68,17 @@ intensity 拉到 2.0 是最猛的一档，另外两种风格（自然/电影）�
 | 参数 | 说明 |
 |---|---|
 | 放大倍率 / 输出宽度 | 1/1.5/2/3/4 倍，或直接指定输出宽度 |
+| SR 模型 | DLSS 超分模型选择：default=驱动自动选（最新 transformer）；E/F=CNN 更平滑；J/K/L/M=transformer 更锐 |
 | NR 风格 | 标准 / 自然 / 电影感 |
 | 强度 / 细节 / 色彩 | NR 三个核心旋钮 |
 | 皮肤 / 局部结构 / 局部色调 / 全局色调 | 精调：皮肤处理、纹理锐度、光影对比、整体明暗 |
 | 自动遮罩 | 保护画面里的文字、UI、字幕区域 |
 | 光流引擎（视频） | auto 会用 NVOFA 硬件光流，画面异常再换 lk |
 | 显卡选择 | 双卡用户可以把超分丢给副卡，-1 自动 |
-| 编码器 / CQ | hevc/h264/av1，CQ 越小质量越高 |
+| 编码器 / CQ | hevc/h264/av1（NVENC）、prores（剪辑软件直读）、ffv1（无损母带）、av1_svt（CPU） |
+| 位深 | 10-bit 渐变更平滑（天空/暗场少色带），8-bit 兼容性最好 |
+| 码率 / NVENC 预设 | 0=按 CQ 恒定质量；也可以指定目标码率、p1~p7 速度档 |
+| 音频 | 自动保留 / 原样复制 / 指定编码 / 去掉音轨 |
 
 每个参数鼠标停上去都有中文提示（系统是英文环境时自动显示英文）。
 
@@ -79,7 +95,7 @@ ComfyUI/custom_nodes/ComfyUI-DLSS-NR/
 python install.py
 ```
 
-它会自动从上游 [video2dlssnr v1.2 release](https://github.com/DaniilSokolyuk/video2dlssnr/releases)（该版本已打包全部组件）下载并安装四件套：
+它会自动从上游 [video2dlssnr v1.3 release](https://github.com/DaniilSokolyuk/video2dlssnr/releases)（该版本已打包全部组件）下载并安装四件套：
 
 - `video2dlssnr.exe`
 - `nvngx.dll_dlssnr.dll`

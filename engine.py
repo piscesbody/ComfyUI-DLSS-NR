@@ -64,6 +64,8 @@ def _nr_args(opts, motion=True):
             "--nr-detail", str(float(opts.get("detail", 1.0))),
             "--nr-color", str(float(opts.get("color", 1.0))),
             "--nr-ui-correction", "1" if opts.get("ui_correction") else "0"]
+    if opts.get("sr_preset"):
+        args += ["--nr-sr-preset", str(opts["sr_preset"])]  # requires upstream v1.3+
     if motion:
         args += ["--nr-motion", "1" if opts.get("motion", True) else "0",
                  "--nr-motion-engine", opts.get("motion_engine", "auto")]
@@ -73,6 +75,94 @@ def _nr_args(opts, motion=True):
     if a >= 0:
         args += ["--adapter", str(a)]
     return args
+
+
+# codec -> (ffmpeg encoder, family); containers each family may live in
+_CODECS = {
+    "hevc_nvenc": ("hevc_nvenc", "nvenc"),
+    "h264_nvenc": ("h264_nvenc", "nvenc"),
+    "av1_nvenc": ("av1_nvenc", "nvenc"),
+    "av1_svt": ("libsvtav1", "sw"),
+    "prores": ("prores_ks", "prores"),
+    "ffv1": ("ffv1", "ffv1"),
+}
+_CONTAINERS = {
+    ".mp4": {"hevc_nvenc", "h264_nvenc", "av1_nvenc", "av1_svt"},
+    ".mov": {"hevc_nvenc", "h264_nvenc", "prores"},
+    ".mkv": set(_CODECS),
+    ".webm": {"av1_nvenc", "av1_svt"},
+}
+_COPYABLE_AUDIO = {
+    ".mp4": {"aac", "mp3", "ac3", "eac3", "alac", "opus", "flac"},
+    ".mov": {"aac", "mp3", "ac3", "eac3", "alac", "pcm_s16le", "pcm_s24le",
+             "pcm_s16be", "pcm_s24be"},
+    ".mkv": None,
+    ".webm": {"opus", "vorbis"},
+}
+_NVENC_MAX = {"h264_nvenc": 4096, "hevc_nvenc": 8192, "av1_nvenc": 8192}
+_SWS = "lanczos+accurate_rnd+full_chroma_int+full_chroma_inp"
+
+
+def _audio_args(ext, mode, kbps):
+    if mode == "none":
+        return ["-an"]
+    args = ["-map", "1:a:0?"]
+    if mode == "auto":
+        ok = _COPYABLE_AUDIO[ext]
+        mode = "copy" if (ok is None) else ("opus" if ext == ".webm" else "aac")
+    if mode == "copy":
+        return args + ["-c:a", "copy"]
+    if mode == "aac":
+        return args + ["-c:a", "aac", "-b:a", f"{int(kbps)}k"]
+    if mode == "opus":
+        return args + ["-c:a", "libopus", "-b:a", f"{int(kbps)}k"]
+    if mode == "flac":
+        return args + ["-c:a", "flac"]
+    if mode == "pcm":
+        return args + ["-c:a", "pcm_s24le"]
+    return ["-an"]
+
+
+def _encoder_args(outW, outH, opts, out_ext):
+    """Video encoder flags + the pixel format the rawvideo feeder must use."""
+    codec = opts.get("codec", "hevc_nvenc")
+    enc, family = _CODECS.get(codec) or (codec, "nvenc")
+    ten = int(opts.get("bit_depth", 10)) == 10 and family == "nvenc" and enc != "h264_nvenc"
+    cq = int(opts.get("cq", 19))
+    if family == "nvenc":
+        lim = _NVENC_MAX[enc]
+        if outW > lim or outH > lim:
+            raise PipelineError(f"{codec} cannot encode {outW}x{outH} "
+                                f"(hardware limit {lim}); use hevc/av1 or a smaller output")
+        pix = "p010le" if ten else "yuv420p"
+        v = ["-c:v", enc, "-preset", str(opts.get("enc_preset", "p5")), "-tune", "hq",
+             "-multipass", str(opts.get("multipass", "qres")),
+             "-spatial-aq", "1", "-temporal-aq", "1", "-aq-strength", "8",
+             "-rc-lookahead", "32", "-bf", "3", "-b_ref_mode", "middle"]
+        br = int(opts.get("bitrate", 0))
+        if br > 0:
+            v += ["-rc", "vbr", "-b:v", f"{br}k", "-maxrate", f"{2 * br}k",
+                  "-bufsize", f"{4 * br}k"]
+        else:
+            v += ["-rc", "vbr", "-cq", str(cq), "-b:v", "0"]
+        if enc == "hevc_nvenc":
+            v += ["-profile:v", "main10" if ten else "main", "-tier", "high"]
+        elif enc == "h264_nvenc":
+            v += ["-profile:v", "high"]
+        return v, pix
+    if family == "sw":
+        pix = "yuv420p10le" if ten else "yuv420p"
+        v = ["-c:v", enc, "-preset", str(int(opts.get("sw_preset", 6))),
+             "-svtav1-params", "tune=0"]
+        br = int(opts.get("bitrate", 0))
+        v += (["-b:v", f"{br}k"] if br > 0 else ["-crf", str(cq)])
+        return v, pix
+    if family == "prores":
+        prof = str(opts.get("prores_profile", "hq"))
+        pix = "yuv444p10le" if prof.startswith("4444") else "yuv422p10le"
+        return ["-c:v", enc, "-profile:v", prof, "-vendor", "apl0"], pix
+    return (["-c:v", "ffv1", "-level", "3", "-coder", "1", "-context", "1", "-g", "1"],
+            "bgr0")
 
 
 def _output_size(opts, inW, inH):
@@ -147,6 +237,12 @@ def run_pipeline(video_in, video_out, opts, progress_cb=None, log_cb=None,
 
     outW, outH = _output_size(opts, inW, inH)
 
+    out_ext = os.path.splitext(video_out)[1].lower() or ".mp4"
+    allowed = _CONTAINERS.get(out_ext, {"hevc_nvenc", "h264_nvenc", "av1_nvenc", "av1_svt"})
+    if opts.get("codec", "hevc_nvenc") not in allowed:
+        raise PipelineError(f"codec {opts['codec']} cannot go into a {out_ext} container; "
+                            f"allowed: {', '.join(sorted(allowed))}")
+
     vf = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,format=rgba"
     dec = [ffmpeg, "-v", "error", "-i", video_in]
     if int(opts.get("frames", 0)) > 0:
@@ -158,20 +254,25 @@ def run_pipeline(video_in, video_out, opts, progress_cb=None, log_cb=None,
     if (outW, outH) != (inW, inH):
         tool += ["--nr-width", str(outW), "--nr-height", str(outH)]
 
-    cq = int(opts.get("cq", 0))
-    audio = bool(opts.get("audio", True))
+    audio_mode = str(opts.get("audio_mode", "auto"))
+    if not opts.get("audio", True):
+        audio_mode = "none"
+    v_args, v_pix = _encoder_args(outW, outH, opts, out_ext)
     enc = [ffmpeg, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba",
            "-s", f"{outW}x{outH}", "-r", f"{fps}", "-i", "-",
            "-i", video_in, "-map", "0:v:0"]
-    if audio:
-        enc += ["-map", "1:a:0?", "-c:a", "aac", "-b:a", "192k"]
+    enc += _audio_args(out_ext, audio_mode, int(opts.get("audio_bitrate", 192)))
+    evf = []
+    if v_pix != "bgr0":
+        evf = [f"scale=out_color_matrix=bt709:out_range=tv:flags={_SWS}",
+               f"format={v_pix}",
+               "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"]
     else:
-        enc += ["-an"]
-    enc += ["-c:v", opts.get("codec", "hevc_nvenc"), "-preset", "p5",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-shortest"]
-    if cq > 0:
-        enc[enc.index("-preset") + 2:enc.index("-preset") + 2] = ["-cq", str(cq)]
-    enc.append(video_out)
+        evf = [f"format={v_pix}",
+               "setparams=color_primaries=bt709:color_trc=bt709:range=pc"]
+    enc += ["-vf", ",".join(evf)] + v_args
+    enc += ["-movflags", "+faststart"] if out_ext in (".mp4", ".mov") else []
+    enc += ["-shortest", video_out]
 
     started = time.perf_counter()
     p1 = p2 = p3 = None
