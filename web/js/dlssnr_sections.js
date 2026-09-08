@@ -12,12 +12,16 @@ const LABELS = {
         sec_size: "输出尺寸",
         sec_nr: "NR 增强 — 细节 / 色调 / 皮肤",
         sec_enc: "运动与编码",
+        sec_fg: "DLSSG 帧生成",
+        sec_encode: "视频编码",
     },
     en: {
         sec_preset: "PRESET",
         sec_size: "OUTPUT SIZE",
         sec_nr: "NR ENHANCE — detail / tone / skin",
         sec_enc: "MOTION & ENCODING",
+        sec_fg: "DLSSG FRAME GENERATION",
+        sec_encode: "VIDEO ENCODING",
     },
 };
 
@@ -118,8 +122,9 @@ const SCHEMA_ORDER = ["video", "video_path", "sec_preset", "quality_preset",
     "sec_size", "upscale_factor", "output_width", "sec_nr", "nr_style",
     "sr_preset", "nr_intensity", "nr_detail", "nr_color", "nr_skin",
     "nr_structure", "nr_tone", "nr_global_tone", "auto_mask", "batch_mode",
-    "self_check", "sec_enc", "motion_engine", "gpu_adapter", "codec",
-    "bit_depth", "cq", "bitrate", "enc_preset", "audio_mode", "audio_bitrate"];
+    "self_check", "sec_fg", "fg_passes", "fg_cut", "sec_enc", "sec_encode",
+    "motion_engine", "gpu_adapter", "codec", "bit_depth", "cq", "bitrate",
+    "enc_preset", "audio_mode", "audio_bitrate"];
 
 const rankOf = (w) => {
     const i = SCHEMA_ORDER.indexOf(String(w.name));

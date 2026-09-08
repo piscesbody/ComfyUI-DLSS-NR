@@ -2,7 +2,7 @@ from comfy_api.latest import ComfyExtension, io
 
 import os
 
-from .nodes import DLSSNRVideoUpscale, DLSSNRImageUpscale
+from .nodes import DLSSNRVideoUpscale, DLSSNRImageUpscale, DLSSNRFrameInterp
 
 WEB_DIRECTORY = "./web/js"
 
@@ -14,7 +14,7 @@ class DLSSNRExtension(ComfyExtension):
         pass
 
     async def get_node_list(self):
-        return [DLSSNRVideoUpscale, DLSSNRImageUpscale]
+        return [DLSSNRVideoUpscale, DLSSNRFrameInterp, DLSSNRImageUpscale]
 
 
 def comfy_entrypoint():

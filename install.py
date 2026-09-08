@@ -36,6 +36,23 @@ WANTED = [
 # exe versions below this lack --nr-sr-preset and friends (upstream v1.3+)
 MIN_EXE_BYTES = 441856
 
+# ---- optional DLSSG frame generation runtime (DLSSNRFrameInterp node) ----
+# The NGX dlssg runtime ships in NVIDIA's own DLSS SDK repo; the small D3D12
+# worker binary comes from the upstream ComfyUI pack at a pinned commit.
+# Both are verified against sha256 whitelists below before they land in
+# runtimes/default/.
+FG_COMMIT = "c755e274a405a7a47667bd567d489b6845066bcf"
+FG_WORKER_URL = ("https://media.githubusercontent.com/media/Konohamaru04/"
+                 "ComfyUI-NVIDIA-DLSS-Frame-Interpolation/" + FG_COMMIT +
+                 "/bin/runtime/dlssg/dlssg-worker.exe")
+FG_WORKER_SHA256 = ("8a747f9ed613842d5b8b34a811ad43bc1a9466540e2e5a0c8ef"
+                    "4005f0db9e384")
+DLSSG_SDK_TAG = "v310.7.0"
+DLSSG_DLL_URL = ("https://raw.githubusercontent.com/NVIDIA/DLSS/refs/tags/" +
+                 DLSSG_SDK_TAG + "/lib/Windows_x86_64/rel/nvngx_dlssg.dll")
+DLSSG_DLL_SHA256 = ("135eaf0733c1e37381a8c28abcf7a862404a54132b81787c04e35d"
+                    "09efc5e36f")
+
 
 def log(msg):
     print(f"[install] {msg}", flush=True)
@@ -43,6 +60,15 @@ def log(msg):
 
 def have(name):
     return os.path.isfile(os.path.join(RUNTIME, name))
+
+
+def sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def download(url, dest, desc):
@@ -78,13 +104,53 @@ def check_ffmpeg():
         return False
 
 
+def install_fg():
+    """Fetch the optional DLSSG frame-generation pair with hash pinning."""
+    targets = [
+        ("dlssg-worker.exe", FG_WORKER_URL, FG_WORKER_SHA256,
+         f"dlssg-worker @ Konohamaru04 commit {FG_COMMIT[:12]}"),
+        ("nvngx_dlssg.dll", DLSSG_DLL_URL, DLSSG_DLL_SHA256,
+         f"nvngx_dlssg.dll @ NVIDIA/DLSS SDK {DLSSG_SDK_TAG} (official)"),
+    ]
+    ok = True
+    for name, url, want, desc in targets:
+        dest = os.path.join(RUNTIME, name)
+        if have(name) and sha256_file(dest) == want:
+            log(f"{name}: already installed (sha256 OK)")
+            continue
+        try:
+            download(url, dest, desc)
+        except Exception as e:
+            log(f"  ! {name} download failed: {e}")
+            ok = False
+            continue
+        got = sha256_file(dest)
+        if got != want:
+            os.remove(dest)
+            log(f"  ! {name} sha256 mismatch (got {got[:16]}…), removed. "
+                f"Upstream may have moved; do NOT install unverified binaries.")
+            ok = False
+        else:
+            log(f"  installed {name} (sha256 OK)")
+    if ok:
+        log("DLSSG frame generation ready - the 'DLSS 视频插帧 (DLSSG)' node "
+            "needs an RTX GPU, driver 610+ and HAGS enabled.")
+    return ok
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true",
                     help="re-download even if files already exist")
+    ap.add_argument("--fg", action="store_true",
+                    help="install the optional DLSSG frame-generation runtime "
+                         "(dlssg-worker.exe + nvngx_dlssg.dll, sha256-pinned)")
     args = ap.parse_args()
 
     os.makedirs(RUNTIME, exist_ok=True)
+
+    if args.fg:
+        sys.exit(0 if install_fg() else 1)
 
     needed = [w for w in WANTED if args.force or not have(os.path.basename(w))]
 
@@ -125,6 +191,12 @@ def main():
             os.path.getsize(exe_path) < MIN_EXE_BYTES:
         log("  ! video2dlssnr.exe is an old upstream release; the SR preset")
         log("    and 10-bit options need v1.3. Re-run:  python install.py --force")
+    for fg_name in ("dlssg-worker.exe", "nvngx_dlssg.dll"):
+        if have(fg_name):
+            log(f"  {fg_name}: OK (frame generation ready)")
+        else:
+            log(f"  {fg_name}: not installed (optional - the DLSSG frame")
+            log("    interpolation node needs it:  python install.py --fg)")
     if not check_ffmpeg():
         log("  ffmpeg: not found - the VIDEO node needs it.")
         log("  install with:  winget install Gyan.FFmpeg")

@@ -16,7 +16,7 @@ from datetime import datetime
 import folder_paths
 from comfy_api.latest import io, ui
 
-from . import engine
+from . import engine, fg_engine
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 RUNTIMES = os.path.join(ROOT, "runtimes")
@@ -61,15 +61,20 @@ T = {
     "sec_size": {"zh": "输出尺寸", "en": "OUTPUT SIZE"},
     "sec_nr": {"zh": "NR 增强 - 调这些改变细节/色调/皮肤", "en": "NR ENHANCE - detail / tone / skin"},
     "sec_enc": {"zh": "运动与编码", "en": "MOTION & ENCODING"},
+    "sec_fg": {"zh": "DLSSG 帧生成", "en": "DLSSG FRAME GENERATION"},
+    "sec_encode": {"zh": "视频编码", "en": "VIDEO ENCODING"},
     # node display names
     "video_node": {"zh": "DLSS NR 视频超分 (SR+NR)", "en": "DLSS NR Video Upscale (SR+NR)"},
     "image_node": {"zh": "DLSS NR 图片超分 (SR+NR)", "en": "DLSS NR Image Upscale (SR+NR)"},
+    "fg_node": {"zh": "DLSS 视频插帧 (DLSSG)", "en": "DLSS Frame Interpolation (DLSSG)"},
     # short widget labels
     "lbl_video_path": {"zh": "视频路径", "en": "Video path"},
     "lbl_preset": {"zh": "画质预设", "en": "Quality preset"},
     "lbl_images": {"zh": "输入图片", "en": "Images"},
     "lbl_batch": {"zh": "批处理模式", "en": "Batch mode"},
     "lbl_selfcheck": {"zh": "运行前自检", "en": "Self-check first"},
+    "lbl_fg_passes": {"zh": "插帧倍率", "en": "Frame multiplier"},
+    "lbl_fg_cut": {"zh": "切镜灵敏度", "en": "Scene-cut threshold"},
     # combos
     "preset_custom": {"zh": "自定义 (下方手动参数生效)", "en": "Custom (sliders below apply)"},
     "preset_lite": {"zh": "轻度增强 (接近原图)", "en": "Light (close to source)"},
@@ -158,6 +163,28 @@ T = {
     "selfcheck_tt": {
         "zh": "处理前先跑一次 2 帧功能自检 (约 10 秒)。首次使用或换环境时建议打开。",
         "en": "Run a 2-frame functional self-test before processing (~10s). Useful on first run."},
+    # frame generation node
+    "fg_passes_tt": {
+        "zh": "2x=原生 DLSSG 一次插 1 帧 (24->48, 最快); 4x=两级串联 (24->96, 耗时翻倍)。Ada 显卡原生只支持每级 2x。",
+        "en": "2x=native DLSSG, one generated frame per gap (24->48, fastest); 4x=two chained stages (24->96, ~2x slower). Ada GPUs natively do 2x per stage."},
+    "fg_cut_tt": {
+        "zh": "切镜检测灵敏度: 画面均值差超过该值视为切镜并重置插帧历史 (0.1=更灵敏 0.35=更迟钝)。默认 0.24 一般不用动。",
+        "en": "Scene-cut sensitivity: a frame-to-frame mean delta above this resets interpolation history (0.1=touchier, 0.35=looser). Default 0.24 is fine."},
+    "fg_codec_tt": {
+        "zh": "编码器。hevc=体积小(默认) h264=兼容性最好 av1=最新。位深固定 8-bit (插帧不改色深)。",
+        "en": "Encoder. hevc=small (default) h264=compatibility av1=newest. Bit depth fixed at 8-bit (interpolation does not touch colour depth)."},
+    "fg_runtime_tt": {
+        "zh": "选择 dlssg-worker 运行时目录 (runtimes 下的子目录名)。",
+        "en": "dlssg-worker runtime directory (a folder under runtimes/)."},
+    "fg_install_hint": {
+        "zh": "DLSSG 运行时未安装。在插件目录运行: python install.py --fg",
+        "en": "DLSSG runtime not installed. Run in the plugin folder: python install.py --fg"},
+    "log_fg_start": {
+        "zh": "开始插帧: {src}\n           输出 -> {out} ({mult}x DLSSG)",
+        "en": "Interpolating: {src}\n           output -> {out} ({mult}x DLSSG)"},
+    "log_fg_done": {
+        "zh": "插帧完成: {fin} -> {fout} 帧 | {sec:.1f}s ({sfps:.1f} 帧/秒源帧) | 切镜 {cuts} 个 | 输出 {w}x{h} @ {ofps:.2f}fps",
+        "en": "done: {fin} -> {fout} frames | {sec:.1f}s ({sfps:.1f} src fps) | {cuts} cuts | output {w}x{h} @ {ofps:.2f}fps"},
     # runtime messages
     "err_no_runtime": {
         "zh": "未找到运行时。请把 video2dlssnr.exe、nvngx_dlss.dll、nvngx_dlssnr.dll、nvngx.dll_dlssnr.dll 放入插件 runtimes/default/ 目录。",
@@ -185,6 +212,10 @@ T = {
         "en": "done: {frames} frames | {mb:.1f} MB | {fps:.1f} fps GPU | {sec:.1f}s | output {w}x{h}"},
     "log_video": {"zh": "视频", "en": "video"},
     "log_image": {"zh": "图片", "en": "image"},
+    "log_fg": {"zh": "插帧", "en": "interp"},
+    "hags_off": {
+        "zh": "硬件加速 GPU 计划 (HAGS) 未开启, DLSSG 帧生成可能初始化失败。开启方法: 设置 > 系统 > 屏幕 > 显示卡 > 默认图形设置。",
+        "en": "Hardware-accelerated GPU scheduling (HAGS) is off; DLSSG may fail to init. Enable: Settings > System > Display > Graphics > Default graphics settings."},
     "selftest_run": {
         "zh": "功能自检中 (2 帧, 960x544 -> 1920x1088)…",
         "en": "Functional self-test (2 frames, 960x544 -> 1920x1088)…"},
@@ -235,6 +266,10 @@ def _quick_report(runtime):
     for dll in ("nvngx_dlss.dll", "nvngx_dlssnr.dll", "nvngx.dll_dlssnr.dll"):
         p = os.path.join(RUNTIMES, runtime, dll)
         lines.append(f"{dll}: {'OK sha256=' + _sha256(p) if ok(p) else 'MISSING (' + p + ')'}")
+    fg_exe, fg_dll = fg_engine.fg_files(os.path.join(RUNTIMES, runtime))
+    lines.append(f"dlssg-worker.exe: {'OK' if ok(fg_exe) else 'MISSING (' + fg_exe + ')'}")
+    lines.append(f"nvngx_dlssg.dll: {'OK sha256=' + _sha256(fg_dll) if ok(fg_dll) else 'MISSING (python install.py --fg)'}")
+    lines.append(f"HAGS: {'on' if fg_engine.hags_enabled() else 'OFF - ' + t('hags_off')}")
     lines.append(f"ffmpeg: {engine.find_tool('ffmpeg') or 'MISSING'}")
     lines.append(f"ffprobe: {engine.find_tool('ffprobe') or 'MISSING'}")
     try:
@@ -326,6 +361,34 @@ def _interrupt():
         _c()
     except ImportError:
         pass
+
+
+def resolve_video_source(video_path, video, unique_id):
+    """Common VIDEO-source resolution for the file-pipeline nodes.
+
+    Returns a file path: the explicit video_path, the file behind a VIDEO
+    input, or (for in-memory VIDEO objects like CreateVideo output) a
+    materialized copy under ComfyUI/temp/dlssnr/.
+    """
+    src = (video_path or "").strip().strip('"')
+    if src:
+        if not os.path.isfile(src):
+            raise FileNotFoundError(f"{t('err_no_file')}: {src}")
+        return src
+    if video is not None:
+        try:
+            s = video.get_stream_source()
+            if isinstance(s, str) and os.path.isfile(s):
+                return s
+        except Exception:
+            pass
+        tmp_dir = os.path.join(folder_paths.get_temp_directory(), "dlssnr")
+        os.makedirs(tmp_dir, exist_ok=True)
+        src = os.path.join(tmp_dir, f"video_{unique_id}.mp4")
+        video.save_to(src)
+        if os.path.isfile(src):
+            return src
+    raise ValueError(t("err_need_path"))
 
 
 # ------------------------------------------------------------------ nodes --
@@ -448,25 +511,8 @@ class DLSSNRVideoUpscale(io.ComfyNode):
                 motion_engine, gpu_adapter, codec, bit_depth, cq, bitrate,
                 enc_preset, audio_mode, audio_bitrate,
                 runtime=None, video=None, **kwargs):
-        src = (video_path or "").strip().strip('"')
-        if not src and video is not None:
-            try:
-                s = video.get_stream_source()
-                if isinstance(s, str) and os.path.isfile(s):
-                    src = s
-            except Exception:
-                pass
-            if not src:
-                # in-memory video (e.g. CreateVideo output) has no file path;
-                # materialize it first so the file pipeline can process it
-                tmp_dir = os.path.join(folder_paths.get_temp_directory(), "dlssnr")
-                os.makedirs(tmp_dir, exist_ok=True)
-                src = os.path.join(tmp_dir, f"video_{kwargs.get('unique_id', '0')}.mp4")
-                video.save_to(src)
-        if not src:
-            raise ValueError(t("err_need_path"))
-        if not os.path.isfile(src):
-            raise FileNotFoundError(f"{t('err_no_file')}: {src}")
+        src = resolve_video_source(video_path, video,
+                                   kwargs.get("unique_id", "0"))
         runtime = _runtime_or_raise(runtime)
 
         pkey = _preset_key_of(quality_preset)
@@ -524,6 +570,131 @@ class DLSSNRVideoUpscale(io.ComfyNode):
 
         _log(t("log_done").format(frames=frames, mb=os.path.getsize(out_path) / 2 ** 20,
                                   fps=gpu_fps, sec=elapsed, w=size[0], h=size[1]))
+        try:
+            from comfy_api.latest import InputImpl
+        except ImportError:
+            from comfy_api.v0_0_2 import InputImpl
+        out_video = InputImpl.VideoFromFile(out_path)
+        return io.NodeOutput(
+            out_video, out_path,
+            ui=ui.PreviewVideo([ui.SavedResult(os.path.basename(out_path),
+                                               "dlssnr", io.FolderType.output)]))
+
+
+class DLSSNRFrameInterp(io.ComfyNode):
+    """DLSS DLSSG frame generation: 2x (or cascaded 4x) interpolation, CFR in."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="DLSSNRFrameInterp",
+            display_name=t("fg_node"),
+            category="video/interpolation",
+            description=t("fg_passes_tt"),
+            is_output_node=True,
+            inputs=[
+                io.Video.Input("video", optional=True, tooltip=t("video_path_tt")),
+                io.String.Input("video_path", default="",
+                                display_name=t("lbl_video_path"),
+                                tooltip=t("video_path_tt")),
+
+                io.Combo.Input("sec_fg", options=[sec("sec_fg")],
+                               default=sec("sec_fg"), optional=True),
+                io.Combo.Input("fg_passes", options=["2x", "4x"], default="2x",
+                               display_name=t("lbl_fg_passes"),
+                               tooltip=t("fg_passes_tt")),
+                io.Float.Input("fg_cut", default=0.24, min=0.05, max=0.6, step=0.01,
+                               display_name=t("lbl_fg_cut"),
+                               tooltip=t("fg_cut_tt")),
+
+                io.Combo.Input("sec_encode", options=[sec("sec_encode")],
+                               default=sec("sec_encode"), optional=True),
+                io.Combo.Input("codec",
+                               options=["hevc_nvenc", "h264_nvenc", "av1_nvenc",
+                                        "av1_svt", "prores", "ffv1"],
+                               default="hevc_nvenc", display_name=t("codec_tt").split("。")[0],
+                               tooltip=t("fg_codec_tt")),
+                io.Int.Input("cq", default=19, min=0, max=34, step=1,
+                             display_name=t("cq_tt").split(",")[0],
+                             tooltip=t("cq_tt")),
+                io.Int.Input("bitrate", default=0, min=0, max=200000, step=100,
+                             display_name=t("bitrate_tt").split(" (")[0],
+                             tooltip=t("bitrate_tt")),
+                io.Combo.Input("enc_preset",
+                               options=["p1", "p2", "p3", "p4", "p5", "p6", "p7"],
+                               default="p5", display_name=t("enc_preset_tt").split("。")[0],
+                               tooltip=t("enc_preset_tt")),
+                io.Combo.Input("audio_mode",
+                               options=[t("audio_auto"), t("audio_copy"), "aac",
+                                        "opus", "flac", "pcm", t("audio_none")],
+                               default=t("audio_auto"),
+                               display_name=t("audio_mode_tt").split("。")[0],
+                               tooltip=t("audio_mode_tt")),
+                io.Int.Input("audio_bitrate", default=192, min=64, max=512, step=32,
+                             display_name=t("audio_bitrate_tt").split(" (")[0],
+                             tooltip=t("audio_bitrate_tt")),
+            ],
+            hidden=[io.Hidden.unique_id],
+            outputs=[
+                io.Video.Output("video", display_name=t("log_video")),
+                io.String.Output("file_path"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, video_path, fg_passes, fg_cut, codec, cq, bitrate,
+                enc_preset, audio_mode, audio_bitrate,
+                runtime=None, video=None, **kwargs):
+        src = resolve_video_source(video_path, video,
+                                   kwargs.get("unique_id", "0"))
+        runtime = _runtime_or_raise(runtime)
+        rt_dir = os.path.join(RUNTIMES, runtime)
+        worker, _dll = fg_engine.fg_files(rt_dir)
+        if not (os.path.isfile(worker)):
+            raise RuntimeError(t("fg_install_hint") + f"\n({rt_dir})")
+
+        passes = 2 if str(fg_passes).startswith("4") else 1
+        mult = 2 ** passes
+        audio_map = {t("audio_auto"): "auto", t("audio_copy"): "copy",
+                     t("audio_none"): "none"}
+        audio_m = audio_map.get(audio_mode, audio_mode)
+        ext_map = {"prores": ".mov", "ffv1": ".mkv"}
+        out_ext = ext_map.get(codec, ".mp4")
+        opts = {
+            "worker": worker, "runtime_dir": rt_dir,
+            "passes": passes, "cut_thresh": float(fg_cut),
+            "codec": codec, "bit_depth": 8, "cq": int(cq),
+            "bitrate": int(bitrate), "enc_preset": enc_preset,
+            "audio": audio_m != "none", "audio_mode": audio_m,
+            "audio_bitrate": int(audio_bitrate),
+        }
+
+        out_dir = os.path.join(folder_paths.get_output_directory(), "dlssnr")
+        os.makedirs(out_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(src))[0]
+        out_path = os.path.join(out_dir, f"{stem}_fg{mult}x{out_ext}")
+        n = 1
+        while os.path.isfile(out_path):
+            out_path = os.path.join(out_dir,
+                                    f"{stem}_fg{mult}x_{n}{out_ext}")
+            n += 1
+
+        _log(t("log_fg_start").format(src=src, out=out_path, mult=mult))
+        if not fg_engine.hags_enabled():
+            _log("[warn] " + t("hags_off"))
+        try:
+            fin, fout, in_fps, elapsed, size, cuts = fg_engine.run_frame_interp(
+                src, out_path, opts,
+                progress_cb=_make_progress(_log, t("log_fg")),
+                log_cb=lambda line: _log(f"[dlssg] {line}"),
+                interrupt_check=_interrupt)
+        except fg_engine.PipelineError as e:
+            report = "\n".join(_quick_report(runtime))
+            raise RuntimeError(f"{e}\n---- {t('err_diag')} ----\n{report}") from e
+
+        _log(t("log_fg_done").format(
+            fin=fin, fout=fout, sec=elapsed, sfps=fin / max(elapsed, 1e-6),
+            cuts=cuts, w=size[0], h=size[1], ofps=in_fps * mult))
         try:
             from comfy_api.latest import InputImpl
         except ImportError:
